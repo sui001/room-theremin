@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Room Theremin</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #000000;
+    --panel: #f4f4f4;
+    --line: #000000;
+    --wedge: #eef6ff;
+    --grid: #5a7aa0;
+    --band-a: #fff7cc;
+    --band-b: #ffffff;
+    --ok: #007a2e;
+    --warn: #c43c00;
+    --v0: #e0007a;
+    --v1: #0057d9;
+    --v2: #e06a00;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 2px solid var(--line); }
+  h1 { font-size: 20px; margin: 0 12px 0 0; }
+  button { font: inherit; font-weight: 600; padding: 8px 14px; border: 2px solid var(--line);
+    background: #fff; color: var(--ink); border-radius: 6px; cursor: pointer; }
+  button.on { background: var(--ink); color: #fff; }
+  #status { font-weight: 700; }
+  #status.ok { color: var(--ok); }
+  #status.warn { color: var(--warn); }
+  main { display: grid; grid-template-columns: 1fr 300px; gap: 16px; padding: 16px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  #stage { width: 100%; aspect-ratio: 16 / 10; border: 2px solid var(--line); border-radius: 6px;
+    background: #fff; touch-action: none; display: block; }
+  aside { background: var(--panel); border: 2px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+  aside h2 { font-size: 15px; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+  aside h2:first-child { margin-top: 0; }
+  label { display: block; margin: 8px 0 2px; font-weight: 600; }
+  select, input[type=range] { width: 100%; font: inherit; }
+  select { padding: 4px; border: 2px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); }
+  .val { float: right; font-variant-numeric: tabular-nums; }
+  .voices { display: grid; gap: 6px; margin-top: 6px; }
+  .voice { display: flex; justify-content: space-between; padding: 6px 8px; background: #fff;
+    border: 2px solid var(--line); border-left-width: 10px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+  .hint { margin-top: 12px; font-size: 14px; }
+  code { background: #fff; padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Room Theremin</h1>
+  <button id="connect">Connect sensor</button>
+  <button id="sound">Start sound</button>
+  <button id="ghost">Ghost walker</button>
+  <span id="status">Not connected. Drag on the room to fake a body.</span>
+</header>
+<main>
+  <canvas id="stage"></canvas>
+  <aside>
+    <h2>Mapping</h2>
+    <label>Axes
+      <select id="axes">
+        <option value="xy">Left/right = pitch, distance = volume</option>
+        <option value="yx">Distance = pitch, left/right = volume</option>
+      </select>
+    </label>
+    <label>Scale
+      <select id="scale">
+        <option value="cont">Continuous (true theremin)</option>
+        <option value="penta" selected>Pentatonic minor</option>
+        <option value="major">Major</option>
+        <option value="chrom">Chromatic</option>
+      </select>
+    </label>
+    <label>Root <span class="val" id="rootV"></span>
+      <input type="range" id="root" min="36" max="72" value="57"></label>
+    <label>Octaves <span class="val" id="octV"></span>
+      <input type="range" id="oct" min="1" max="4" value="2"></label>
+    <label>Glide <span class="val" id="glideV"></span>
+      <input type="range" id="glide" min="10" max="800" value="120"></label>
+    <label>Wave
+      <select id="wave">
+        <option>sine</option><option selected>triangle</option><option>sawtooth</option><option>square</option>
+      </select>
+    </label>
+    <label>Master volume <span class="val" id="volV"></span>
+      <input type="range" id="vol" min="0" max="100" value="50"></label>
+
+    <h2>Room</h2>
+    <label>Play width (each side) <span class="val" id="widthV"></span>
+      <input type="range" id="width" min="1000" max="5000" step="100" value="2500"></label>
+    <label>Max distance <span class="val" id="depthV"></span>
+      <input type="range" id="depth" min="1500" max="6000" step="100" value="4500"></label>
+
+    <h2>Bodies</h2>
+    <div class="voices" id="voices"></div>
+    <p class="hint">No sensor? Drag on the room. Each finger or the mouse is a body, up to three.</p>
+    <p class="hint">Needs Chrome or Edge (Web Serial). Close the Arduino Serial Monitor first.</p>
+  </aside>
+</main>
+
+<script>
+// ---------- config ----------
+const MAX_BODIES = 3;
+const HOLD_MS = 350;          // radar drops bodies for a frame or two; don't choke the note
+const FADE_S = 0.25;
+const NEAR_MM = 300;          // closer than this counts as "at the sensor"
+const TRAIL_LEN = 40;
+const VOICE_COLOURS = ['--v0', '--v1', '--v2'].map(v => getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+const SCALES = { penta: [0, 3, 5, 7, 10], major: [0, 2, 4, 5, 7, 9, 11], chrom: [0,1,2,3,4,5,6,7,8,9,10,11] };
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+const $ = id => document.getElementById(id);
+const ctrl = {};
+for (const id of ['axes','scale','root','oct','glide','wave','vol','width','depth']) {
+  ctrl[id] = $(id);
+  ctrl[id].addEventListener('input', onControls);
+}
+
+// ---------- body state ----------
+// slot i = LD2450 target slot i; the sensor keeps slots fairly stable per person
+const bodies = Array.from({ length: MAX_BODIES }, () => ({ x: 0, y: 0, v: 0, lastSeen: -1e9, trail: [] }));
+let source = 'sim';
+let lastFrameAt = 0, frameCount = 0, fps = 0;
+
+function setBody(i, x, y, v) {
+  const b = bodies[i];
+  b.x = x; b.y = y; b.v = v || 0; b.lastSeen = performance.now();
+  b.trail.push([x, y]);
+  if (b.trail.length > TRAIL_LEN) b.trail.shift();
+}
+const isPresent = b => performance.now() - b.lastSeen < HOLD_MS;
+
+// ---------- mapping ----------
+function midiToHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+// 0..1 along the pitch axis, 0..1 along the volume axis
+function axesFor(b) {
+  const W = +ctrl.width.value, D = +ctrl.depth.value;
+  const across = clamp01((b.x + W) / (2 * W));
+  const out = clamp01((b.y - NEAR_MM) / (D - NEAR_MM));
+  return ctrl.axes.value === 'xy'
+    ? { pitchT: across, volT: 1 - out }     // nearer the sensor = louder
+    : { pitchT: 1 - out, volT: 1 - Math.abs(across - 0.5) * 2 }; // nearer = higher, centre = louder
+}
+
+function scaleSteps() {
+  const oct = +ctrl.oct.value, sc = SCALES[ctrl.scale.value];
+  if (!sc) return null;
+  const steps = [];
+  for (let o = 0; o < oct; o++) for (const s of sc) steps.push(o * 12 + s);
+  steps.push(oct * 12);
+  return steps;
+}
+
+function midiFor(pitchT) {
+  const root = +ctrl.root.value, steps = scaleSteps();
+  if (!steps) return root + pitchT * 12 * +ctrl.oct.value;
+  return root + steps[Math.min(steps.length - 1, Math.floor(pitchT * steps.length))];
+}
+
+function noteName(m) {
+  const r = Math.round(m);
+  return NOTE_NAMES[((r % 12) + 12) % 12] + (Math.floor(r / 12) - 1);
+}
+
+// ---------- audio ----------
+let ac = null, master = null;
+const voices = [];
+
+function startAudio() {
+  ac = new AudioContext();
+  const comp = ac.createDynamicsCompressor();
+  master = ac.createGain();
+  // a short feedback delay so it sounds like it lives in a room, not a phone
+  const delay = ac.createDelay(1), fb = ac.createGain(), wet = ac.createGain();
+  delay.delayTime.value = 0.28; fb.gain.value = 0.32; wet.gain.value = 0.25;
+  master.connect(comp); master.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(comp);
+  comp.connect(ac.destination);
+  for (let i = 0; i < MAX_BODIES; i++) {
+    const osc = ac.createOscillator(), g = ac.createGain();
+    osc.type = ctrl.wave.value; g.gain.value = 0;
+    osc.connect(g); g.connect(master); osc.start();
+    voices.push({ osc, g });
+  }
+  onControls();
+}
+
+function updateAudio() {
+  if (!ac) return;
+  const now = ac.currentTime, tc = +ctrl.glide.value / 1000 / 3;
+  bodies.forEach((b, i) => {
+    const v = voices[i];
+    if (isPresent(b)) {
+      const { pitchT, volT } = axesFor(b);
+      v.osc.frequency.setTargetAtTime(midiToHz(midiFor(pitchT)), now, tc);
+      v.g.gain.setTargetAtTime(0.05 + 0.3 * volT, now, tc);
+    } else {
+      v.g.gain.setTargetAtTime(0, now, FADE_S / 3);
+    }
+  });
+}
+
+function onControls() {
+  $('rootV').textContent = noteName(+ctrl.root.value);
+  $('octV').textContent = ctrl.oct.value;
+  $('glideV').textContent = ctrl.glide.value + ' ms';
+  $('volV').textContent = ctrl.vol.value + '%';
+  $('widthV').textContent = (+ctrl.width.value / 1000).toFixed(1) + ' m';
+  $('depthV').textContent = (+ctrl.depth.value / 1000).toFixed(1) + ' m';
+  if (ac) {
+    master.gain.setTargetAtTime(+ctrl.vol.value / 100, ac.currentTime, 0.05);
+    voices.forEach(v => v.osc.type = ctrl.wave.value);
+  }
+}
+onControls();
+
+$('sound').onclick = async () => {
+  if (!ac) startAudio();
+  else if (ac.state === 'running') await ac.suspend(); else await ac.resume();
+  const on = ac.state === 'running';
+  $('sound').classList.toggle('on', on);
+  $('sound').textContent = on ? 'Mute' : 'Start sound';
+};
+
+// ---------- serial ----------
+function setStatus(text, cls) { const s = $('status'); s.textContent = text; s.className = cls || ''; }
+
+$('connect').onclick = async () => {
+  if (!('serial' in navigator)) { setStatus('This browser has no Web Serial. Use Chrome or Edge.', 'warn'); return; }
+  let port;
+  try { port = await navigator.serial.requestPort(); await port.open({ baudRate: 115200 }); }
+  catch (e) { setStatus('Could not open port: ' + e.message, 'warn'); return; }
+  source = 'radar'; $('connect').classList.add('on'); setStatus('Connected, waiting for frames', 'ok');
+  const reader = port.readable.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, nl).trim()); buf = buf.slice(nl + 1); }
+    }
+  } catch (e) { setStatus('Sensor disconnected: ' + e.message, 'warn'); }
+  source = 'sim'; $('connect').classList.remove('on');
+};
+
+function handleLine(line) {
+  if (!line.startsWith('{')) return;
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.stale) { setStatus('Board connected but the radar is silent. Check TX/RX wiring.', 'warn'); return; }
+  if (!msg.t) return;
+  msg.t.forEach((t, i) => { if (t && i < MAX_BODIES) setBody(i, t[0], t[1], t[2]); });
+  frameCount++;
+}
+
+setInterval(() => {
+  fps = frameCount; frameCount = 0;
+  if (source === 'radar' && fps) setStatus(`Radar live, ${fps} frames/s`, 'ok');
+}, 1000);
+
+// ---------- simulation: pointers and a ghost ----------
+const canvas = $('stage'), g2 = canvas.getContext('2d');
+const pointerSlot = new Map();
+let view = { s: 1, ox: 0, oy: 0 };
+
+function toWorld(e) {
+  const r = canvas.getBoundingClientRect(), dpr = devicePixelRatio;
+  const px = (e.clientX - r.left) * dpr, py = (e.clientY - r.top) * dpr;
+  return [(px - view.ox) / view.s, (view.oy - py) / view.s];
+}
+canvas.addEventListener('pointerdown', e => {
+  const used = new Set(pointerSlot.values());
+  const slot = [...Array(MAX_BODIES).keys()].find(i => !used.has(i) && !(i === 2 && ghostOn));
+  if (slot === undefined) return;
+  pointerSlot.set(e.pointerId, slot);
+  canvas.setPointerCapture(e.pointerId);
+  setBody(slot, ...toWorld(e));
+});
+canvas.addEventListener('pointermove', e => {
+  if (pointerSlot.has(e.pointerId)) setBody(pointerSlot.get(e.pointerId), ...toWorld(e));
+});
+const release = e => pointerSlot.delete(e.pointerId);
+canvas.addEventListener('pointerup', release);
+canvas.addEventListener('pointercancel', release);
+// keep held pointers alive even when they don't move
+setInterval(() => pointerSlot.forEach(i => setBody(i, bodies[i].x, bodies[i].y)), 100);
+
+// a slow wanderer in slot 3, so one person can hear a duet
+let ghostOn = false, ghostT = 0;
+$('ghost').onclick = () => { ghostOn = !ghostOn; $('ghost').classList.toggle('on', ghostOn); };
+setInterval(() => {
+  if (!ghostOn) return;
+  ghostT += 0.1;
+  const W = +ctrl.width.value, D = +ctrl.depth.value;
+  setBody(2, W * 0.8 * Math.sin(ghostT * 0.31), NEAR_MM + (D - NEAR_MM) * (0.5 + 0.4 * Math.sin(ghostT * 0.17 + 1)));
+}, 100);
+
+// ---------- drawing ----------
+function resize() {
+  const dpr = devicePixelRatio, r = canvas.getBoundingClientRect();
+  canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+}
+addEventListener('resize', resize); resize();
+
+function draw() {
+  const W = +ctrl.width.value, D = +ctrl.depth.value;
+  const cw = canvas.width, ch = canvas.height, pad = 30 * devicePixelRatio;
+  const worldW = 6000 * Math.sin(Math.PI / 3);
+  view.s = Math.min((cw - 2 * pad) / (2 * worldW), (ch - 2 * pad) / 6000);
+  view.ox = cw / 2; view.oy = ch - pad;
+  const X = x => view.ox + x * view.s, Y = y => view.oy - y * view.s;
+  const font = px => `${px * devicePixelRatio}px system-ui, sans-serif`;
+
+  g2.fillStyle = '#fff'; g2.fillRect(0, 0, cw, ch);
+
+  // sensor field of view: +-60 deg, 6 m
+  g2.fillStyle = '#eef6ff';
+  g2.beginPath(); g2.moveTo(X(0), Y(0));
+  g2.arc(X(0), Y(0), 6000 * view.s, -Math.PI / 2 - Math.PI / 3, -Math.PI / 2 + Math.PI / 3);
+  g2.closePath(); g2.fill();
+
+  // note bands across the play area
+  const steps = scaleSteps();
+  const pitchOnX = ctrl.axes.value === 'xy';
+  const n = steps ? steps.length : 0;
+  g2.save();
+  g2.beginPath(); g2.rect(X(-W), Y(D), 2 * W * view.s, (D - NEAR_MM) * view.s); g2.clip();
+  for (let k = 0; k < Math.max(n, 1); k++) {
+    const t0 = n ? k / n : 0, t1 = n ? (k + 1) / n : 1;
+    g2.fillStyle = k % 2 ? '#ffffff' : '#fff7cc';
+    if (pitchOnX) g2.fillRect(X(-W + t0 * 2 * W), Y(D), (t1 - t0) * 2 * W * view.s, (D - NEAR_MM) * view.s);
+    else { const ya = D - t0 * (D - NEAR_MM), yb = D - t1 * (D - NEAR_MM); g2.fillRect(X(-W), Y(ya), 2 * W * view.s, (ya - yb) * view.s); }
+  }
+  g2.restore();
+  g2.strokeStyle = '#000'; g2.lineWidth = 2 * devicePixelRatio;
+  g2.strokeRect(X(-W), Y(D), 2 * W * view.s, (D - NEAR_MM) * view.s);
+
+  if (n && n <= 40) {
+    g2.fillStyle = '#000'; g2.font = font(12); g2.textAlign = 'center';
+    for (let k = 0; k < n; k++) {
+      const name = noteName(+ctrl.root.value + steps[k]), t = (k + 0.5) / n;
+      if (pitchOnX) g2.fillText(name, X(-W + t * 2 * W), Y(D) - 6 * devicePixelRatio);
+      else { g2.textAlign = 'right'; g2.fillText(name, X(-W) - 6 * devicePixelRatio, Y(D - t * (D - NEAR_MM)) + 4 * devicePixelRatio); }
+    }
+  }
+
+  // distance arcs every metre
+  g2.strokeStyle = '#2a5a90'; g2.lineWidth = 1.5 * devicePixelRatio; g2.fillStyle = '#1a3a66'; g2.font = font(12); g2.textAlign = 'left';
+  for (let m = 1; m <= 6; m++) {
+    g2.beginPath(); g2.arc(X(0), Y(0), m * 1000 * view.s, -Math.PI / 2 - Math.PI / 3, -Math.PI / 2 + Math.PI / 3); g2.stroke();
+    g2.fillText(m + ' m', X(m * 1000 * Math.sin(Math.PI / 3)) + 4, Y(m * 1000 * Math.cos(Math.PI / 3)));
+  }
+
+  // the sensor
+  g2.fillStyle = '#000'; g2.fillRect(X(0) - 18 * devicePixelRatio, Y(0) - 6 * devicePixelRatio, 36 * devicePixelRatio, 12 * devicePixelRatio);
+
+  // bodies
+  let html = '';
+  bodies.forEach((b, i) => {
+    const col = VOICE_COLOURS[i], here = isPresent(b);
+    if (b.trail.length > 1) {
+      g2.strokeStyle = col; g2.lineWidth = 3 * devicePixelRatio; g2.globalAlpha = here ? 0.6 : 0.2;
+      g2.beginPath(); b.trail.forEach(([x, y], k) => k ? g2.lineTo(X(x), Y(y)) : g2.moveTo(X(x), Y(y))); g2.stroke();
+      g2.globalAlpha = 1;
+    }
+    let label = 'not here';
+    if (here) {
+      const { pitchT, volT } = axesFor(b), m = midiFor(pitchT);
+      const r = (10 + 14 * volT) * devicePixelRatio;
+      g2.fillStyle = col; g2.beginPath(); g2.arc(X(b.x), Y(b.y), r, 0, Math.PI * 2); g2.fill();
+      g2.strokeStyle = '#000'; g2.lineWidth = 2 * devicePixelRatio; g2.stroke();
+      g2.fillStyle = '#000'; g2.font = 'bold ' + font(14); g2.textAlign = 'left';
+      g2.fillText(noteName(m), X(b.x) + r + 4, Y(b.y) + 5 * devicePixelRatio);
+      label = `${noteName(m)}  ${(b.x / 1000).toFixed(2)}, ${(b.y / 1000).toFixed(2)} m`;
+    }
+    html += `<div class="voice" style="border-left-color:${col}"><b>Body ${i + 1}</b><span>${label}</span></div>`;
+  });
+  $('voices').innerHTML = html;
+
+  updateAudio();
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
