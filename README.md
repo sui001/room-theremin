@@ -34,6 +34,15 @@ Onboard LED (GPIO47): breathing blue = empty room, green = someone playing, ambe
 2. Open `room_theremin.html` in Chrome or Edge (Web Serial needed; Firefox and Safari won't work).
 3. **Connect sensor**, pick the port, then **Start sound**.
 
+### From plotterpi, no laptop wiring
+
+plotterpi already reads up to three LD2450s through its S3-Matrix, and serves this page at `http://<plotterpi>:8090/theremin`. Opened there, it listens to plotterpi's radar stream by itself, so any phone or laptop on the tailnet can play it and the sound comes out of that device.
+
+- **On 0 1 2**: which sensors exist and are powered. This is plotterpi's own setting, shared with its room view.
+- **Play**: which sensor the theremin follows. Until you pick, it follows whichever one is sending.
+
+**Listen** also works with `ld2450/serve.py` from gen3d, pointed at its `/targets` address.
+
 No hardware? Drag on the room view to fake bodies (multi-touch works), or turn on **Ghost walker** for a simulated second player.
 
 ## Serial format

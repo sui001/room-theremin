@@ -47,6 +47,9 @@
   .voice { display: flex; justify-content: space-between; padding: 6px 8px; background: #fff;
     border: 2px solid var(--line); border-left-width: 10px; border-radius: 4px; font-variant-numeric: tabular-nums; }
   .hint { margin-top: 12px; font-size: 14px; }
+  #serveUrl { font: inherit; padding: 7px 8px; border: 2px solid var(--line); border-radius: 6px; width: 17em; color: var(--ink); background: #fff; }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+  label.inline select { width: auto; }
   code { background: #fff; padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; }
 </style>
 </head>
@@ -54,6 +57,13 @@
 <header>
   <h1>Room Theremin</h1>
   <button id="connect">Connect sensor</button>
+  <input id="serveUrl" value="http://localhost:8095/targets" aria-label="radar stream address">
+  <span id="sensorsOn" class="inline" hidden>On
+    <label class="inline"><input type="checkbox" data-s="0">0</label>
+    <label class="inline"><input type="checkbox" data-s="1">1</label>
+    <label class="inline"><input type="checkbox" data-s="2">2</label></span>
+  <label class="inline">Play <select id="sensor"><option value="0">0</option><option value="1">1</option><option value="2">2</option></select></label>
+  <button id="listen">Listen</button>
   <button id="sound">Start sound</button>
   <button id="ghost">Ghost walker</button>
   <span id="status">Not connected. Drag on the room to fake a body.</span>
@@ -99,7 +109,9 @@
     <h2>Bodies</h2>
     <div class="voices" id="voices"></div>
     <p class="hint">No sensor? Drag on the room. Each finger or the mouse is a body, up to three.</p>
-    <p class="hint">Needs Chrome or Edge (Web Serial). Close the Arduino Serial Monitor first.</p>
+    <p class="hint"><b>Connect sensor</b>: radar board on this computer's USB. Needs Chrome or Edge (Web Serial). Close the Arduino Serial Monitor first.</p>
+    <p class="hint"><b>Listen</b>: the radar over the network. Opened from plotterpi (<code>:8090/theremin</code>) it listens to plotterpi's own sensors by itself; anywhere else, point it at <code>ld2450/serve.py</code>. Any browser, several at once.</p>
+    <p class="hint"><b>On</b> / <b>Play</b>: plotterpi has up to three radars (0, 1, 2, same numbers as its room view), each seeing the room from its own spot. Tick the ones that exist and are powered: this is plotterpi's own setting, so the room view and the human tracker follow it too. The theremin plays from one of them.</p>
   </aside>
 </main>
 
@@ -251,9 +263,80 @@ $('connect').onclick = async () => {
   source = 'sim'; $('connect').classList.remove('on');
 };
 
+// ---------- ld2450 serve: the shared radar over HTTP ----------
+let es = null;
+$('listen').onclick = () => {
+  if (es) { es.close(); es = null; source = 'sim'; $('listen').classList.remove('on'); setStatus('Stopped listening.'); return; }
+  const url = $('serveUrl').value.trim();
+  es = new EventSource(url);
+  source = 'radar'; $('listen').classList.add('on'); setStatus('Listening to ' + url + ', waiting for frames', 'ok');
+  es.onmessage = e => e.data.split('\n').forEach(l => handleLine(l.trim()));   // plotterpi batches lines per event
+  es.onerror = () => setStatus('Cannot reach ' + url + '. Is serve.py running? Retrying...', 'warn');
+};
+
+// opened from plotterpi itself: listen to its stream straight away
+const onPlotterpi = location.protocol.startsWith('http') && location.pathname.includes('theremin');
+if (onPlotterpi) {
+  $('serveUrl').value = location.origin + '/stream';
+  $('listen').click();
+}
+
+// ---------- sensors on/off: plotterpi's setup, shared with its room view ----------
+let roomSetup = null;
+const onBoxes = [...document.querySelectorAll('#sensorsOn input')];
+
+function showSensorsOn() {
+  onBoxes.forEach(b => { b.checked = !!roomSetup.poses[+b.dataset.s].on; });
+  [...$('sensor').options].forEach(o => { o.disabled = !roomSetup.poses[+o.value].on; });
+  if (!roomSetup.poses[+$('sensor').value].on) {
+    const first = roomSetup.poses.findIndex(p => p.on);
+    if (first >= 0) $('sensor').value = String(first);
+  }
+}
+
+async function loadSetup() {
+  try {
+    const d = await (await fetch('/plotted')).json();
+    if (!d.setup || !d.setup.poses) return;          // plotterpi not on the Matrix: nothing to switch
+    roomSetup = d.setup;
+    $('sensorsOn').hidden = false;
+    showSensorsOn();
+  } catch (e) { /* older plotterpi: leave the boxes hidden */ }
+}
+
+onBoxes.forEach(b => b.addEventListener('change', async () => {
+  const i = +b.dataset.s;
+  roomSetup.poses[i].on = b.checked;
+  onBoxes.forEach(x => x.disabled = true);
+  try {
+    const r = await (await fetch('/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                           body: JSON.stringify(roomSetup) })).json();
+    if (!r.ok) throw new Error(r.message);
+    setStatus(`Sensor ${i} ${b.checked ? 'on' : 'off'}, saved to plotterpi`, 'ok');
+  } catch (e) {
+    roomSetup.poses[i].on = !b.checked;
+    setStatus('Could not change sensors: ' + e.message, 'warn');
+  }
+  onBoxes.forEach(x => x.disabled = false);
+  showSensorsOn();
+}));
+
+if (onPlotterpi) loadSetup();
+
+const sensorSeen = {};
+let sensorPicked = false;
+$('sensor').addEventListener('change', () => { sensorPicked = true; });
+
 function handleLine(line) {
   if (!line.startsWith('{')) return;
   let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (typeof msg.s === 'number') {             // plotterpi's Matrix: one line per sensor
+    const now = performance.now();
+    if (msg.t) sensorSeen[msg.s] = now;
+    // until someone picks, follow a sensor that is actually sending
+    if (!sensorPicked && msg.t && now - (sensorSeen[+$('sensor').value] || -1e9) > 2000) $('sensor').value = String(msg.s);
+    if (msg.s !== +$('sensor').value) return;
+  }
   if (msg.stale) { setStatus('Board connected but the radar is silent. Check TX/RX wiring.', 'warn'); return; }
   if (!msg.t) return;
   msg.t.forEach((t, i) => { if (t && i < MAX_BODIES) setBody(i, t[0], t[1], t[2]); });
