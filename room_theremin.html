@@ -102,9 +102,9 @@
 
     <h2>Room</h2>
     <label>Play width (each side) <span class="val" id="widthV"></span>
-      <input type="range" id="width" min="1000" max="5000" step="100" value="2500"></label>
+      <input type="range" id="width" min="1000" max="10000" step="100" value="2500"></label>
     <label>Max distance <span class="val" id="depthV"></span>
-      <input type="range" id="depth" min="1500" max="6000" step="100" value="4500"></label>
+      <input type="range" id="depth" min="1500" max="12000" step="100" value="4500"></label>
 
     <h2>Bodies</h2>
     <div class="voices" id="voices"></div>
@@ -275,7 +275,7 @@ $('listen').onclick = () => {
 };
 
 // opened from plotterpi itself: listen to its stream straight away
-const onPlotterpi = location.protocol.startsWith('http') && location.pathname.includes('theremin');
+const onPlotterpi = location.protocol.startsWith('http') && location.pathname === '/theremin';
 if (onPlotterpi) {
   $('serveUrl').value = location.origin + '/stream';
   $('listen').click();
@@ -395,8 +395,9 @@ addEventListener('resize', resize); resize();
 function draw() {
   const W = +ctrl.width.value, D = +ctrl.depth.value;
   const cw = canvas.width, ch = canvas.height, pad = 30 * devicePixelRatio;
-  const worldW = 6000 * Math.sin(Math.PI / 3);
-  view.s = Math.min((cw - 2 * pad) / (2 * worldW), (ch - 2 * pad) / 6000);
+  // zoom to fit the sensor's 6 m view or the play area, whichever is bigger
+  const R = Math.max(6000, D), worldW = Math.max(R * Math.sin(Math.PI / 3), W);
+  view.s = Math.min((cw - 2 * pad) / (2 * worldW), (ch - 2 * pad) / R);
   view.ox = cw / 2; view.oy = ch - pad;
   const X = x => view.ox + x * view.s, Y = y => view.oy - y * view.s;
   const font = px => `${px * devicePixelRatio}px system-ui, sans-serif`;
@@ -436,7 +437,7 @@ function draw() {
 
   // distance arcs every metre
   g2.strokeStyle = '#2a5a90'; g2.lineWidth = 1.5 * devicePixelRatio; g2.fillStyle = '#1a3a66'; g2.font = font(12); g2.textAlign = 'left';
-  for (let m = 1; m <= 6; m++) {
+  for (let m = 1; m <= Math.ceil(R / 1000); m++) {
     g2.beginPath(); g2.arc(X(0), Y(0), m * 1000 * view.s, -Math.PI / 2 - Math.PI / 3, -Math.PI / 2 + Math.PI / 3); g2.stroke();
     g2.fillText(m + ' m', X(m * 1000 * Math.sin(Math.PI / 3)) + 4, Y(m * 1000 * Math.cos(Math.PI / 3)));
   }
